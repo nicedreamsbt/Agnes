@@ -78,6 +78,19 @@ VENUES=kamino,juplend,drift
 
 The filter only controls printing triggers. Health is always computed from the complete marginfi account so cross-venue collateral and debt remain accurate.
 
+
+## Rust companion version
+
+A Rust companion implementation lives in `rust-monitor/`. I originally built the Node.js service first because the published TypeScript SDK exposes the marginfi account wrapper, oracle price lookup, and health helpers directly. The Rust companion mirrors the monitor state machine and cache/index behavior in a std-only crate so it can be compiled in restricted environments, and it is structured for live wiring to `yellowstone-grpc-client` plus the marginfi Rust SDK/IDL decoder from `marginfi-v2`.
+
+```bash
+cd rust-monitor
+cargo run -- --help
+RUST_REPLAY_EVENTS=fixtures/events.jsonl cargo run
+```
+
+The Rust core supports replaying bank/account/oracle/mint/program updates, printing bank catalogs with multiple oracle keys, routing oracle updates through `oracle -> banks -> accounts`, and aggregating local account health values supplied by the decoder layer.
+
 ## Setup
 
 ```bash

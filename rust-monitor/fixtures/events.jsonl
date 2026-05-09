@@ -1,0 +1,4 @@
+# bank with two oracle accounts/providers
+kind=bank pubkey=Bank11111111111111111111111111111111111111 mint=Mint11111111111111111111111111111111111111 symbol=USDC venue=marginfi oracle_setup=PythPush+Switchboard oracles=OraclePyth11111111111111111111111111111111,OracleSwitch111111111111111111111111111111 asset_weight_init=0.9 asset_weight_maint=0.95 liability_weight_init=1.1 liability_weight_maint=1.05 deposit_limit=1000000 borrow_limit=800000
+kind=account pubkey=Acct11111111111111111111111111111111111111 authority=Wallet111111111111111111111111111111111111 positions=Bank11111111111111111111111111111111111111:1000:125
+kind=oracle pubkey=OraclePyth11111111111111111111111111111111 slot=12345
