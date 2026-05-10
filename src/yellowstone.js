@@ -1,10 +1,9 @@
-import Client from "@triton-one/yellowstone-grpc";
-
-const COMMITMENT = {
-  processed: 0,
-  confirmed: 1,
-  finalized: 2,
-};
+import Client from "./triton-yellowstone.js";
+import {
+  buildSubscribePingRequest,
+  buildSubscribeRequest as buildSubscribeRequestShared,
+  commitmentFromConfig,
+} from "./subscribe.js";
 
 export async function createGrpcStream(config, trackedAccounts, onAccountUpdate) {
   const client = new Client(config.grpcEndpoint, config.grpcToken, {
@@ -25,41 +24,30 @@ export async function createGrpcStream(config, trackedAccounts, onAccountUpdate)
   stream.on("end", () => console.error("gRPC stream ended"));
   stream.on("close", () => console.error("gRPC stream closed"));
 
-  await writeSubscribeRequest(stream, buildSubscribeRequest(config, trackedAccounts));
+  await writeSubscribeRequest(
+    stream,
+    buildYellowstoneSubscribeRequest(config, trackedAccounts),
+  );
   startPings(stream);
 
   return { client, stream };
 }
 
-function buildSubscribeRequest(config, trackedAccounts) {
-  const explicitAccounts = Array.from(trackedAccounts.explicitAccounts).sort();
-  return {
-    accounts: {
-      marginfi_accounts: {
-        account: explicitAccounts,
-        owner: [],
-        filters: [],
-      },
-      marginfi_program: {
-        account: [],
-        owner: [config.marginfiProgramId],
-        filters: [],
-      },
-      market_accounts: {
-        account: Array.from(trackedAccounts.marketAccounts).sort(),
-        owner: [],
-        filters: [],
-      },
-    },
-    slots: {},
-    transactions: {},
-    transactionsStatus: {},
-    blocks: {},
-    blocksMeta: {},
-    entry: {},
-    accountsDataSlice: [],
-    commitment: COMMITMENT[config.commitment] ?? COMMITMENT.processed,
-  };
+function buildYellowstoneSubscribeRequest(config, trackedAccounts) {
+  const explicit = Array.from(trackedAccounts.explicitAccounts).sort();
+  const includeExplicit =
+    trackedAccounts.subscribeExplicitAccounts ??
+    Boolean(config.grpcSubscribeExplicitAccounts);
+  const oracleOwnerProgramIds =
+    trackedAccounts.oracleOwnerProgramIds ??
+    (Array.isArray(config.grpcOracleOwnerProgramIds) ? config.grpcOracleOwnerProgramIds : []);
+  return buildSubscribeRequestShared({
+    commitment: commitmentFromConfig(config.commitment),
+    marginfiProgramId: config.marginfiProgramId,
+    accountPubkeys: explicit,
+    oracleOwnerProgramIds,
+    includeExplicitMarginfiAccounts: includeExplicit,
+  });
 }
 
 function normalizeAccountUpdate(update) {
@@ -84,7 +72,7 @@ async function writeSubscribeRequest(stream, request) {
 
 function startPings(stream) {
   setInterval(() => {
-    stream.write({ ping: { id: Date.now() } }, () => undefined);
+    stream.write(buildSubscribePingRequest(), () => undefined);
   }, 15_000).unref();
 }
 

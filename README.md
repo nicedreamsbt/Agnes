@@ -23,7 +23,13 @@ The Yellowstone subscription tracks three account groups:
 - all accounts owned by the marginfi v2 program so newly-touched program accounts can be observed;
 - marginfi market accounts: banks, bank mints, and bank oracle accounts.
 
-When an oracle account changes, the monitor finds every marginfi bank that references that oracle, then every cached marginfi account with an active balance in those banks, and prints the account's quantities and USD assets/liabilities/health using SDK `Balance.computeUsdValue` for equity, initial, and maintenance requirement types.
+### gRPC oracle mapping (not `OracleSetup` streams)
+
+Oracle coverage is **not** wired as separate Yellowstone filters per marginfi `OracleSetup` variant. The watch set is every non-system pubkey in each bank’s `config.oracleKeys` (the same keys the SDK uses for that bank’s oracle layout). For each of those pubkeys the monitor RPCs `getMultipleAccountsInfo`, collects each account’s **owner program**, and subscribes with one Yellowstone **owner** filter per distinct program (plus Pyth Push and optional `GRPC_ORACLE_OWNER_PROGRAMS`). Unrelated accounts under those programs are ignored unless the pubkey is in the watched oracle set. So the pipeline is: **bank state → oracle pubkeys → on-chain owner → owner filters**, with **client-side filtering** to the watched oracle keys.
+
+Optional: set `GRPC_SUBSCRIBE_SLOTS=true` to add a Yellowstone **slots** filter (chain slot ticks). Account updates already include a `slot` field on each message; oracle log lines include that slot when present.
+
+When an oracle account changes, the monitor finds every marginfi bank that references that oracle, then every cached marginfi account with an active balance in those banks, and prints the account's quantities and USD assets/liabilities/health using SDK `Balance.computeUsdValue` for equity, initial, and maintenance requirement types. After a refresh, the `[oracle]` line also prints a compact **oracleUsd** snippet (SDK price per linked bank). If no marginfi user accounts are cached yet, you will see the oracle line without following account lines—that is expected until `accountByKey` is populated (gRPC updates or `RPC_PRELOAD_MARGINFI_ACCOUNTS`).
 
 
 ## Update behavior
@@ -68,12 +74,14 @@ marginfi accounts are Anchor accounts, so the first eight bytes identify the acc
 
 ## Venue filtering
 
+Venue labels on each bank come from the marginfi SDK’s decoded `config.oracleSetup`, `config.assetTag`, and optional integrator account handles on the `Bank` model—not from heuristics on the token name.
+
 Use `VENUES` to limit which bank updates/oracle-linked banks trigger output:
 
 ```env
 VENUES=all
 # or
-VENUES=kamino,juplend,drift
+VENUES=kamino,juplend,drift,solend
 ```
 
 The filter only controls printing triggers. Health is always computed from the complete marginfi account so cross-venue collateral and debt remain accurate.
@@ -102,6 +110,22 @@ npm start
 Set `GRPC_ENDPOINT` and `GRPC_X_TOKEN` to your Yellowstone / Dragon's Mouth provider. `RPC_URL` is used for the initial snapshot and SDK market refreshes.
 
 For a smaller first run, set `MARGINFI_ACCOUNTS` to a comma-separated list of marginfi account pubkeys.
+
+### Catalog noise (`status=missing`)
+
+By default, when the group lists more than `CATALOG_SUMMARY_THRESHOLD` marginfi account addresses (500), the catalog runs in **summary** mode: it prints counts and only health lines for accounts already in the cache—**not** one `status=missing` line per pubkey. Use `CATALOG_MODE=full` to force the old per-key listing (very large groups will spam logs). Set `RPC_PRELOAD_MARGINFI_ACCOUNTS=true` to batch-fetch and decode up to `RPC_PRELOAD_MAX_ACCOUNTS` user accounts over RPC at startup so the cache is warm before gRPC catches up.
+
+### Slot and oracle logging env vars
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `GRPC_SUBSCRIBE_SLOTS` | `false` | Add Yellowstone slot subscription |
+| `GRPC_LOG_SLOT_UPDATES` | `false` | Log each slot message (noisy) |
+| `GRPC_LOG_ACCOUNT_UPDATE_SLOT` | `false` | Log slot on marginfi `Bank` / `MarginfiAccount` updates |
+| `CATALOG_MODE` | `auto` | `auto` \| `summary` \| `full` |
+| `CATALOG_SUMMARY_THRESHOLD` | `500` | In `auto`, use summary when the group has more addresses than this |
+| `RPC_PRELOAD_MARGINFI_ACCOUNTS` | `false` | RPC batch preload user accounts into cache |
+| `RPC_PRELOAD_MAX_ACCOUNTS` | `50000` | Cap for preload |
 
 ## Important implementation notes
 

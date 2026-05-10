@@ -1,4 +1,7 @@
-const KNOWN_VENUES = ["marginfi", "kamino", "juplend", "drift", "unknown"];
+import { AssetTag, OracleSetup } from "@0dotxyz/p0-ts-sdk";
+
+/** Venue buckets aligned with P0 SDK enums (`OracleSetup`, `AssetTag`) + README filters. */
+const KNOWN_VENUES = ["marginfi", "kamino", "juplend", "drift", "solend", "unknown"];
 
 export function parseVenueList(value) {
   const items = (value || "all")
@@ -16,13 +19,104 @@ export function parseVenueList(value) {
   return new Set(items);
 }
 
+/**
+ * Venue label from marginfi SDK bank state (on-chain config), not string guessing.
+ * Order: oracleSetup → assetTag → integration account handles → native oracle families → metadata text (juplend only).
+ */
 export function inferBankVenue(bank) {
+  const config = bank?.config;
+  const oracleSetup = config?.oracleSetup ?? bank?.oracleSetup;
+  const assetTag = config?.assetTag ?? bank?.assetTag;
+
+  const fromOracle = oracleSetup != null ? venueFromOracleSetup(oracleSetup) : null;
+  if (fromOracle) return fromOracle;
+
+  const fromTag = assetTag != null ? venueFromAssetTag(assetTag) : null;
+  if (fromTag) return fromTag;
+
+  const fromIx = venueFromIntegrationAccounts(bank);
+  if (fromIx) return fromIx;
+
+  if (oracleSetup != null && isNativeMarginfiOracleSetup(oracleSetup)) {
+    return "marginfi";
+  }
+
   const haystack = collectBankText(bank).toLowerCase();
-  if (haystack.includes("kamino") || haystack.includes("klend") || haystack.includes("k-lend")) return "kamino";
   if (haystack.includes("juplend") || haystack.includes("jup lend") || haystack.includes("jupiter lend")) return "juplend";
-  if (haystack.includes("drift")) return "drift";
+
   if (!haystack) return "unknown";
   return "marginfi";
+}
+
+/**
+ * Venue for Agnes liquidation execution (withdraw path): integration accounts and
+ * `assetTag` are authoritative so Kamino/Drift/JupLend/Solend banks are not routed
+ * through native `makeWithdrawIx` due to oracle/metadata fallthrough to `"marginfi"`.
+ */
+export function inferLiquidationExecutionVenue(bank) {
+  const fromIx = venueFromIntegrationAccounts(bank);
+  if (fromIx) return fromIx;
+  const assetTag = bank?.config?.assetTag ?? bank?.assetTag;
+  const fromTag = assetTag != null ? venueFromAssetTag(assetTag) : null;
+  if (fromTag) return fromTag;
+  return inferBankVenue(bank);
+}
+
+function venueFromOracleSetup(setup) {
+  switch (setup) {
+    case OracleSetup.KaminoPythPush:
+    case OracleSetup.KaminoSwitchboardPull:
+    case OracleSetup.FixedKamino:
+      return "kamino";
+    case OracleSetup.DriftPythPull:
+    case OracleSetup.DriftSwitchboardPull:
+    case OracleSetup.FixedDrift:
+      return "drift";
+    case OracleSetup.SolendPythPull:
+    case OracleSetup.SolendSwitchboardPull:
+      return "solend";
+    case OracleSetup.JuplendPythPull:
+    case OracleSetup.JuplendSwitchboardPull:
+    case OracleSetup.FixedJuplend:
+      return "juplend";
+    default:
+      return null;
+  }
+}
+
+function venueFromAssetTag(tag) {
+  switch (tag) {
+    case AssetTag.KAMINO:
+      return "kamino";
+    case AssetTag.DRIFT:
+      return "drift";
+    case AssetTag.SOLEND:
+      return "solend";
+    case AssetTag.JUPLEND:
+      return "juplend";
+    default:
+      return null;
+  }
+}
+
+function venueFromIntegrationAccounts(bank) {
+  if (bank?.kaminoIntegrationAccounts) return "kamino";
+  if (bank?.driftIntegrationAccounts) return "drift";
+  if (bank?.solendIntegrationAccounts) return "solend";
+  if (bank?.jupLendIntegrationAccounts) return "juplend";
+  return null;
+}
+
+function isNativeMarginfiOracleSetup(setup) {
+  return (
+    setup === OracleSetup.None ||
+    setup === OracleSetup.PythLegacy ||
+    setup === OracleSetup.SwitchboardV2 ||
+    setup === OracleSetup.PythPushOracle ||
+    setup === OracleSetup.SwitchboardPull ||
+    setup === OracleSetup.StakedWithPythPush ||
+    setup === OracleSetup.Fixed
+  );
 }
 
 export function bankMatchesVenueFilter(bank, venueAllowList) {
