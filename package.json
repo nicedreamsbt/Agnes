@@ -8,18 +8,30 @@
     "start": "node src/monitor.js",
     "verify": "node src/verify-account.js",
     "smoke:liquidation": "node src/smoke-liquidation.js",
+    "liq:smoke": "node src/liq-smoke.js",
     "reference:liquidation-txs": "node scripts/fetch-reference-liquidation-txs.mjs",
-    "check": "node --check src/monitor.js && node --check src/config.js && node --check src/health.js && node --check src/subscribe.js && node --check src/yellowstone.js && node --check src/venues.js && node --check src/idl.js && node --check src/bank-summary.js && node --check src/marginfi-account-addresses.js && node --check src/marginfi-account-cache.js && node --check src/tee-log.js && node --check src/verify-account.js && node --check src/smoke-liquidation.js && node --check src/liquidation/cache-freshness.js && node --check src/liquidation/candidate.js && node --check src/liquidation/integration-accounts.js && node --check src/liquidation/slot-tracker.js && node --check src/liquidation/pda.js && node --check src/liquidation/marginfi-receivership.js && node --check src/liquidation/fee-state.js && node --check src/liquidation/receivership-health.js && node --check src/liquidation/flash-projection.js && node --check src/liquidation/idl/eva01-idl.js && node --check src/liquidation/pdas/kamino.js && node --check src/liquidation/pdas/drift.js && node --check src/liquidation/resolvers/kamino-reserve.js && node --check src/liquidation/resolvers/drift-spot-market.js && node --check src/liquidation/resolvers/juplend-lending.js && node --check src/liquidation/resolvers/juplend-derived.js && node --check src/liquidation/instructions/kamino-refresh.js && node --check src/liquidation/instructions/juplend-update-rate.js && node --check src/liquidation/venues/index.js && node --check src/liquidation/jupiter-build.js && node --check src/liquidation/plan.js && node --check src/liquidation/simulate.js && node --check src/liquidation/keypair-fs.js && node --check src/liquidation/liq-attempt-logger.js && node --check src/liquidation/liq-tx-metadata.js && node --check src/liquidation/plan-liquidation-helpers.test.js",
-    "test:ix": "node --test src/liquidation/eva01-ix-compat.test.js src/liquidation/venue-resolvers.test.js src/liquidation/plan-liquidation-helpers.test.js src/liquidation/flash-projection.test.js"
+    "check": "node --check src/monitor.js && node --check src/config.js && node --check src/health.js && node --check src/subscribe.js && node --check src/yellowstone.js && node --check src/venues.js && node --check src/idl.js && node --check src/bank-summary.js && node --check src/marginfi-account-addresses.js && node --check src/marginfi-account-cache.js && node --check src/preload.js && node --check src/tee-log.js && node --check src/verify-account.js && node --check src/smoke-liquidation.js && node --check src/liq-smoke.js && node --check src/liquidation/cache-freshness.js && node --check src/liquidation/candidate.js && node --check src/liquidation/integration-accounts.js && node --check src/liquidation/slot-tracker.js && node --check src/liquidation/pda.js && node --check src/liquidation/marginfi-receivership.js && node --check src/liquidation/fee-state.js && node --check src/liquidation/receivership-health.js && node --check src/liquidation/flash-projection.js && node --check src/liquidation/idl/eva01-idl.js && node --check src/liquidation/pdas/kamino.js && node --check src/liquidation/pdas/drift.js && node --check src/liquidation/resolvers/kamino-reserve.js && node --check src/liquidation/resolvers/drift-spot-market.js && node --check src/liquidation/resolvers/juplend-lending.js && node --check src/liquidation/resolvers/juplend-derived.js && node --check src/liquidation/instructions/kamino-refresh.js && node --check src/liquidation/instructions/juplend-update-rate.js && node --check src/liquidation/venues/index.js && node --check src/liquidation/jupiter-build.js && node --check src/liquidation/plan.js && node --check src/liquidation/simulate.js && node --check src/liquidation/keypair-fs.js && node --check src/liquidation/liq-attempt-logger.js && node --check src/liquidation/liq-tx-metadata.js && node --check src/liquidation/plan-liquidation-helpers.test.js && node --check src/liquidation/smoke/config.js && node --check src/liquidation/smoke/cap-repay.js && node --check src/liquidation/smoke/oracle-crank.js && node --check src/liquidation/smoke/switchboard-crank.js && node --check src/liquidation/smoke/account-validator.js && node --check src/liquidation/smoke/jito-bundle.js && node --check src/liquidation/smoke/rpc-backup.js && node --check src/liquidation/smoke/failure-classifier.js && node --check src/liquidation/smoke/report.js",
+    "test:ix": "node --test src/liquidation/eva01-ix-compat.test.js src/liquidation/venue-resolvers.test.js src/liquidation/plan-liquidation-helpers.test.js src/liquidation/flash-projection.test.js src/liquidation/receivership-health.test.js"
   },
   "dependencies": {
-    "@coral-xyz/anchor": "0.30.1",
-    "bignumber.js": "^9.3.1",
     "@0dotxyz/p0-ts-sdk": "^2.2.1",
+    "@coral-xyz/anchor": "0.30.1",
+    "@pythnetwork/hermes-client": "^2.0.0",
+    "@pythnetwork/pyth-solana-receiver": "^0.12.0",
     "@solana/spl-token": "^0.4.8",
     "@solana/web3.js": "^1.98.0",
+    "@switchboard-xyz/on-demand": "^3.10.1",
     "@triton-one/yellowstone-grpc": "^5.0.8",
+    "bignumber.js": "^9.3.1",
     "dotenv": "^16.4.7"
+  },
+  "overrides": {
+    "uuid": "8.3.2",
+    "jito-ts": {
+      "@solana/web3.js": {
+        "rpc-websockets": "7.11.2"
+      }
+    }
   },
   "engines": {
     "node": ">=20"

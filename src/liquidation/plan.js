@@ -13,6 +13,7 @@ import {
   makeEndLiquidationIx,
   makeRepayIx,
   makeClassicLendingLiquidateIx,
+  makeInitLiquidationRecordIx,
 } from "./marginfi-receivership.js";
 import { deriveLiquidationRecord } from "./pda.js";
 import { computeProjectedActiveBanksForFlashEnd } from "./flash-projection.js";
@@ -68,6 +69,7 @@ const JUPITER_WIDEN_MAX_ACCOUNTS = 32;
  * @property {object} [_bankHydrationDebug]
  * @property {"receivership" | "classic_flash"} [liquidationBundleKind]
  * @property {import("@solana/web3.js").TransactionInstruction | null} [classicLendingLiquidateIx]
+ * @property {import("@solana/web3.js").AccountMeta[] | null} [classicLendingLiquidateMetas] snapshot of ix.keys at plan build (for smoke validator)
  * @property {number} [computeUnitPriceMicroLamports]
  * @property {boolean} [usesMarginfiFlashWrap] true when classic_flash (marginfi flash envelope)
  */
@@ -377,6 +379,10 @@ export async function buildAgnesLiquidationPlan(ctx, cfg) {
         ctx.liquidateeWrapper,
         ctx.liquidatorMarginfiAccount,
         ctx.client.bankMap,
+        {
+          assetBankPk: planCtx.assetBank.address,
+          liabBankPk: planCtx.liabBank.address,
+        },
       );
       if (clRem.liquidateeAccounts > 255 || clRem.liquidatorAccounts > 255) {
         base.skipReason = "CLASSIC_LIQUIDATE_REMAINING_ACCOUNTS_TOO_LARGE";
@@ -400,6 +406,11 @@ export async function buildAgnesLiquidationPlan(ctx, cfg) {
           liquidatorAccounts: clRem.liquidatorAccounts,
         },
       );
+      base.classicLendingLiquidateMetas = base.classicLendingLiquidateIx.keys.map((k) => ({
+        pubkey: k.pubkey,
+        isSigner: k.isSigner,
+        isWritable: k.isWritable,
+      }));
       const liqWrapper = new MarginfiAccountWrapper(ctx.liquidatorMarginfiAccount, ctx.client);
       const amountUi = withdrawNativeToUiAmount(c.maxAssetAmount, planCtx.assetBank);
       const tokenProgramW = await getMintOwnerOrTokenProgram(ctx.connection, planCtx.assetBank.mint);
@@ -438,6 +449,7 @@ export async function buildAgnesLiquidationPlan(ctx, cfg) {
       base.venueWithdrawPrepIxs = withdrawIxs.slice(0, -1);
       base.venueWithdrawIx = withdrawIxs[withdrawIxs.length - 1];
       base.classicLendingLiquidateIx = null;
+      base.classicLendingLiquidateMetas = null;
     }
 
     const widenMax = Math.min(64, Math.max(cfg.jupiterMaxAccounts, JUPITER_WIDEN_MAX_ACCOUNTS));
@@ -613,6 +625,7 @@ function emptyPlan(candidate, cfg) {
     usesMarginfiFlashWrap: false,
     computeUnitPriceMicroLamports: cfg.agnesComputeUnitPriceMicroLamports ?? 0,
     classicLendingLiquidateIx: null,
+    classicLendingLiquidateMetas: null,
     flashBorrowIx: null,
     flashRepayIx: null,
     preRefreshIxs: [],

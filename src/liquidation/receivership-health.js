@@ -2,6 +2,7 @@ import { PublicKey } from "@solana/web3.js";
 import {
   AssetTag,
   OracleSetup,
+  composeRemainingAccounts,
   computeHealthCheckAccounts,
 } from "@0dotxyz/p0-ts-sdk";
 
@@ -15,11 +16,7 @@ function isNonDefault(pk) {
 
 /**
  * Remaining-account pubkeys for one **active balance** in `lending_account_liquidate` / risk health walks.
- * Mirrors `get_remaining_accounts_per_bank` + account ordering in marginfi-v2 `marginfi_account.rs`
- * (OracleSetup::Fixed => bank only; DEFAULT/SOL => bank+oracle; KAMINO/… => bank+oracle+integration; STAKED => 4 keys).
- *
- * `computeHealthAccountMetas` from the SDK does not follow `OracleSetup::Fixed` (1 key) and can desync
- * all following positions → `InvalidBankAccount` (left = expected balance.bank_pk, right = wrong AI key).
+ * Mirrors `get_remaining_accounts_per_bank` + `OraclePriceFeedAdapter::try_from_bank` (default tag: bank + 1 oracle AI).
  *
  * @param {import("@0dotxyz/p0-ts-sdk").Bank} bank
  * @returns {import("@solana/web3.js").PublicKey[]}
@@ -60,32 +57,72 @@ export function liquidateRemainingPubkeysForBank(bank) {
 }
 
 /**
- * Remaining accounts for `lending_account_liquidate`: liquidator observation metas first, then liquidatee
- * (matches on-chain slice: `liquidator_remaining_accounts` then tail `liquidatee_accounts`).
+ * @param {import("@solana/web3.js").PublicKey} pk
+ * @param {import("@solana/web3.js").PublicKey | undefined} assetBankPk
+ * @param {import("@solana/web3.js").PublicKey | undefined} liabBankPk
+ */
+function isLiquidationPairBank(pk, assetBankPk, liabBankPk) {
+  if (assetBankPk && pk.equals(assetBankPk)) return true;
+  if (liabBankPk && pk.equals(liabBankPk)) return true;
+  return false;
+}
+
+/**
+ * Remaining accounts for `lending_account_liquidate` (Anchor `remainingAccounts` only — after static accounts).
+ *
+ * Layout matches marginfi `lending_account_liquidate`:
+ * `[asset_oracle, liab_oracle, ...liquidator_observation..., ...liquidatee_observation...]`
+ *
+ * Liquidator observation uses **no** mandatory banks unless `liquidatorMandatoryBanks` is provided (rare).
+ * Liquidatee observation always includes mandatory `[assetBank, liabBank]` so the liquidation pair is present
+ * even if projected from inactive slots (matches historical mainnet txs).
+ *
  * @param {import("@0dotxyz/p0-ts-sdk").MarginfiAccountWrapper} liquidateeWrapper
  * @param {import("@0dotxyz/p0-ts-sdk").MarginfiAccount} liquidatorAccount
  * @param {Map<string, import("@0dotxyz/p0-ts-sdk").Bank>} bankMap
+ * @param {object} [opts]
+ * @param {import("@solana/web3.js").PublicKey} [opts.assetBankPk]
+ * @param {import("@solana/web3.js").PublicKey} [opts.liabBankPk]
+ * @param {import("@solana/web3.js").PublicKey[]} [opts.liquidatorMandatoryBanks]
  */
-export function buildClassicLiquidateRemainingAccounts(liquidateeWrapper, liquidatorAccount, bankMap) {
-  const leeBanks = computeHealthCheckAccounts(liquidateeWrapper.account.balances, bankMap, [], []);
-  const liqBanks = computeHealthCheckAccounts(liquidatorAccount.balances, bankMap, [], []);
-  const leeObs = leeBanks.flatMap((b) => liquidateRemainingPubkeysForBank(b));
-  const liqObs = liqBanks.flatMap((b) => liquidateRemainingPubkeysForBank(b));
-  const leeActive = new Set(
-    liquidateeWrapper.account.balances.filter((b) => b.active).map((b) => b.bankPk.toBase58()),
-  );
-  const liqActive = new Set(liquidatorAccount.balances.filter((b) => b.active).map((b) => b.bankPk.toBase58()));
-  /** @param {import("@solana/web3.js").PublicKey[]} pks */
-  const toMeta = (pks, activeSet) =>
-    pks.map((pk) => ({
-      pubkey: pk,
-      isSigner: false,
-      isWritable: activeSet.has(pk.toBase58()),
-    }));
-  const leeRem = toMeta(leeObs, leeActive);
-  const liqRem = toMeta(liqObs, liqActive);
+export function buildClassicLiquidateRemainingAccounts(liquidateeWrapper, liquidatorAccount, bankMap, opts = {}) {
+  const { assetBankPk, liabBankPk, liquidatorMandatoryBanks = [] } = opts;
+
+  const mandatoryLee = assetBankPk && liabBankPk ? [assetBankPk, liabBankPk] : [];
+  const mandatoryLiq = liquidatorMandatoryBanks;
+
+  const leeBanks = computeHealthCheckAccounts(liquidateeWrapper.balances, bankMap, mandatoryLee, []);
+  const liqBanks = computeHealthCheckAccounts(liquidatorAccount.balances, bankMap, mandatoryLiq, []);
+
+  const assetBank = assetBankPk ? bankMap.get(assetBankPk.toBase58()) : null;
+  const liabBank = liabBankPk ? bankMap.get(liabBankPk.toBase58()) : null;
+  if (!assetBank || !liabBank) {
+    throw new Error("buildClassicLiquidateRemainingAccounts: assetBankPk and liabBankPk must exist in bankMap");
+  }
+
+  /** @type {import("@solana/web3.js").AccountMeta[]} */
+  const prefix = [
+    { pubkey: assetBank.oracleKey, isSigner: false, isWritable: false },
+    { pubkey: liabBank.oracleKey, isSigner: false, isWritable: false },
+  ];
+
+  const liqGroups = liqBanks.map((b) => liquidateRemainingPubkeysForBank(b));
+  const leeGroups = leeBanks.map((b) => liquidateRemainingPubkeysForBank(b));
+  const liqFlat = composeRemainingAccounts(liqGroups);
+  const leeFlat = composeRemainingAccounts(leeGroups);
+
+  /** @param {import("@solana/web3.js").PublicKey} pk */
+  const metaForObs = (pk) => ({
+    pubkey: pk,
+    isSigner: false,
+    isWritable: isLiquidationPairBank(pk, assetBankPk, liabBankPk),
+  });
+
+  const liqRem = liqFlat.map(metaForObs);
+  const leeRem = leeFlat.map(metaForObs);
+
   return {
-    remainingAccounts: [...liqRem, ...leeRem],
+    remainingAccounts: [...prefix, ...liqRem, ...leeRem],
     liquidateeAccounts: leeRem.length,
     liquidatorAccounts: liqRem.length,
   };
@@ -97,10 +134,10 @@ export function buildClassicLiquidateRemainingAccounts(liquidateeWrapper, liquid
  * @param {Map<string, import("@0dotxyz/p0-ts-sdk").Bank>} bankMap
  */
 export function buildReceivershipRemainingForLiquidatee(liquidateeWrapper, bankMap) {
-  const healthBanks = computeHealthCheckAccounts(liquidateeWrapper.account.balances, bankMap, [], []);
+  const healthBanks = computeHealthCheckAccounts(liquidateeWrapper.balances, bankMap, [], []);
   const observationPubkeys = healthBanks.flatMap((b) => liquidateRemainingPubkeysForBank(b));
   const activeBankSet = new Set(
-    liquidateeWrapper.account.balances.filter((b) => b.active).map((b) => b.bankPk.toBase58()),
+    liquidateeWrapper.balances.filter((b) => b.active).map((b) => b.bankPk.toBase58()),
   );
   const startRemainingAccounts = observationPubkeys.map((pk) => ({
     pubkey: pk,

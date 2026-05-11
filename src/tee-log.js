@@ -1,4 +1,5 @@
 import fs from "fs";
+import path from "path";
 
 /**
  * Duplicate process stdout/stderr to a file (still echoes to the terminal).
@@ -7,7 +8,15 @@ import fs from "fs";
 export function installLogFileTee(filePath) {
   if (!filePath || typeof filePath !== "string") return;
 
-  const stream = fs.createWriteStream(filePath, { flags: "a" });
+  const resolved = path.resolve(filePath);
+  const dir = path.dirname(resolved);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {
+    /* ignore mkdir errors; createWriteStream may still work for cwd-relative paths */
+  }
+
+  const stream = fs.createWriteStream(resolved, { flags: "a" });
   stream.write(`\n--- ${new Date().toISOString()} monitor log ---\n`);
 
   const origOut = process.stdout.write.bind(process.stdout);

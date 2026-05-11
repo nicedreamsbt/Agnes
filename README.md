@@ -17,11 +17,15 @@ On startup the monitor:
 
 ## What it streams
 
-The Yellowstone subscription tracks three account groups:
+Yellowstone is wired with **program owner** filters, not a per-pubkey list of every marginfi user:
 
-- explicitly preloaded marginfi accounts;
-- all accounts owned by the marginfi v2 program so newly-touched program accounts can be observed;
-- marginfi market accounts: banks, bank mints, and bank oracle accounts.
+1. **`marginfi_program`** — `owner =` the marginfi v2 program id. That single filter delivers **all** program-owned accounts (banks, user marginfi accounts, and any other marginfi PDAs). The handler uses the Anchor discriminator / IDL helpers in [`src/idl.js`](src/idl.js) client-side to classify `Bank` vs `MarginfiAccount` vs other layouts and only act on what it understands.
+
+2. **`oracle_owner_*`** — one entry per distinct **oracle account owner program** (Switchboard, Pyth Push, Drift oracle program, etc.), discovered from on-chain owners of the bank `oracleKeys` set (see below). The node receives every account owned by those programs; the handler **ignores** updates unless `pubkey` is in the watched oracle pubkey set built from banks.
+
+3. **Optional `GRPC_SUBSCRIBE_SLOTS`** — slot ticks for labeling / debugging.
+
+**Not** the default model: `GRPC_SUBSCRIBE_EXPLICIT_ACCOUNTS=true` adds a second filter that lists individual marginfi user pubkeys. That duplicates (1) for full groups and is only useful for a **small** explicit allowlist (e.g. `MARGINFI_ACCOUNTS` debugging).
 
 ### gRPC oracle mapping (not `OracleSetup` streams)
 
@@ -107,13 +111,15 @@ npm install
 npm start
 ```
 
+Liquidation transaction smoke harness (dry-run by default): `npm run liq:smoke` or `pnpm run liq:smoke`. Set `LIQ_SMOKE_ENABLED=true` and `LIQ_SMOKE_TARGET_ACCOUNT` (see `.env.example`).
+
 Set `GRPC_ENDPOINT` and `GRPC_X_TOKEN` to your Yellowstone / Dragon's Mouth provider. `RPC_URL` is used for the initial snapshot and SDK market refreshes.
 
 For a smaller first run, set `MARGINFI_ACCOUNTS` to a comma-separated list of marginfi account pubkeys.
 
 ### Catalog noise (`status=missing`)
 
-By default, when the group lists more than `CATALOG_SUMMARY_THRESHOLD` marginfi account addresses (500), the catalog runs in **summary** mode: it prints counts and only health lines for accounts already in the cache—**not** one `status=missing` line per pubkey. Use `CATALOG_MODE=full` to force the old per-key listing (very large groups will spam logs). Set `RPC_PRELOAD_MARGINFI_ACCOUNTS=true` to batch-fetch and decode up to `RPC_PRELOAD_MAX_ACCOUNTS` user accounts over RPC at startup so the cache is warm before gRPC catches up.
+By default, when the group lists more than `CATALOG_SUMMARY_THRESHOLD` marginfi account addresses (500), the catalog runs in **summary** mode: it prints counts and only health lines for accounts already in the cache—**not** one `status=missing` line per pubkey. Use `CATALOG_MODE=full` to force the old per-key listing (very large groups will spam logs). Set `RPC_PRELOAD_MARGINFI_ACCOUNTS=true` to batch-fetch and decode up to `RPC_PRELOAD_MAX_ACCOUNTS` user accounts over RPC at startup so the cache is warm before gRPC catches up. Preload tries a single full-data `getProgramAccounts` when the full cap slice is still missing from disk (`RPC_PRELOAD_USE_GPA`); otherwise it uses parallel `getMultipleAccountsInfo` with periodic `[preload]` progress lines. Raw account bytes are optionally persisted under `AGNES_MARGINFI_ACCOUNT_CACHE_FILE` so the next process start can decode from disk first and skip most preload RPC.
 
 ### Slot and oracle logging env vars
 
@@ -122,10 +128,17 @@ By default, when the group lists more than `CATALOG_SUMMARY_THRESHOLD` marginfi 
 | `GRPC_SUBSCRIBE_SLOTS` | `false` | Add Yellowstone slot subscription |
 | `GRPC_LOG_SLOT_UPDATES` | `false` | Log each slot message (noisy) |
 | `GRPC_LOG_ACCOUNT_UPDATE_SLOT` | `false` | Log slot on marginfi `Bank` / `MarginfiAccount` updates |
+| `GRPC_SUBSCRIBE_EXPLICIT_ACCOUNTS` | `false` | Extra subscribe entry listing every marginfi user pubkey. For mainnet-sized groups keep **`false`**: the `marginfi_program` owner filter already receives all program-owned accounts; repeating hundreds of thousands of pubkeys can overload the provider and make live `[account]` / `[oracle]` lines look “stuck” until a huge snapshot drains. |
 | `CATALOG_MODE` | `auto` | `auto` \| `summary` \| `full` |
 | `CATALOG_SUMMARY_THRESHOLD` | `500` | In `auto`, use summary when the group has more addresses than this |
 | `RPC_PRELOAD_MARGINFI_ACCOUNTS` | `false` | RPC batch preload user accounts into cache |
 | `RPC_PRELOAD_MAX_ACCOUNTS` | `50000` | Cap for preload |
+| `RPC_PRELOAD_CONCURRENCY` | `16` | Max parallel `getMultipleAccountsInfo` chunk requests during preload |
+| `RPC_PRELOAD_CHUNK_SIZE` | `100` | Accounts per chunk (max 100) |
+| `RPC_PRELOAD_PROGRESS_INTERVAL_MS` | `1000` | Progress log interval during MGA preload |
+| `RPC_PRELOAD_USE_GPA` | `true` | Try one `getProgramAccounts` (full data) before MGA; auto-skipped when partial disk cache hits |
+| `AGNES_MARGINFI_ACCOUNT_CACHE_FILE` | `.cache/marginfi-accounts.json` | Persist raw account bytes; set to `""` to disable |
+| `AGNES_MARGINFI_ACCOUNT_CACHE_SAVE_DEBOUNCE_MS` | `30000` | Debounce writes after gRPC account updates |
 
 ## Important implementation notes
 
@@ -133,3 +146,11 @@ By default, when the group lists more than `CATALOG_SUMMARY_THRESHOLD` marginfi 
 - The marginfi account and bank caches are updated directly from gRPC account data.
 - The health printout includes per-position venue labels, token quantities, per-position USD assets/liabilities, and account totals for equity, initial, and maintenance.
 - The process is intentionally read-only. The wallet object refuses to sign transactions.
+
+## npm overrides (`rpc-websockets` / `uuid`)
+
+`@pythnetwork/pyth-solana-receiver` pulls `jito-ts` → an older `@solana/web3.js` that expects `rpc-websockets@7.x` (CommonClient path). A hoisted `rpc-websockets@9` breaks that subtree at runtime.
+
+`package.json` **`overrides`** pins `rpc-websockets@7.11.2` under **`jito-ts` → `@solana/web3.js` only**, and pins **`uuid@8.3.2`** globally so both `rpc-websockets@7` (jito) and `rpc-websockets@9` (top-level `@solana/web3.js`) resolve a CJS-compatible `uuid` (avoids `ERR_REQUIRE_ESM` from `uuid@9`).
+
+Removing these overrides without replacing them (e.g. upgrading `jito-ts` / receiver deps) will likely re-break `npm run liq:smoke` / Hermes + Pyth receiver startup.

@@ -51,7 +51,9 @@ export async function discoverOracleOwnerPrograms(connection, oraclePubkeyString
  *   accounts in {@link collectWatchedOraclePubkeys}.
  *
  * @param {object} opts
- * @param {boolean} [opts.includeExplicitMarginfiAccounts=false]
+ * @param {boolean} [opts.includeExplicitMarginfiAccounts=false] — duplicate subscribe by pubkey list.
+ *   Not used in normal operation: the `marginfi_program` owner filter already streams every marginfi-owned
+ *   account; client-side IDL routing handles banks vs user accounts. Enable only for a small allowlist.
  * @param {boolean} [opts.subscribeSlots=false] — subscribe to chain slot updates (label key is arbitrary).
  */
 export function buildSubscribeRequest({

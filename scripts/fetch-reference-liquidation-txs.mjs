@@ -21,6 +21,9 @@ const SIG_NO_FLASH =
   "23am4iaawHfTFKE2TqnYKUV76NWqD7fN9mkb8ZBhZfUJnKcZsA57ieRdTVWE7crYfnfA1LGhvdMjrTaxzrXPoxYt";
 const SIG_FLASH =
   "2aj9nD9bQq4bu5CFfonhk38rfCx4Ar7dc4Nj8AHKhW1AdCM3ay3HGsKdWbiAxfgjMpj6vkxdZ5z2LgKbhievRZTz";
+/** Flash classic `lending_account_liquidate` reference (user-provided) for receivership-health builder tests */
+const SIG_FLASH_5nGX =
+  "5nGXoF8AbNVwinziTsgdR4XjBeEXHua8i8kq5Yb2YNcp2UBiTVGunKGt6TBsVDzVrw2TCj5HdJvtUmsjoNEMXP8F";
 
 const MARGINFI = new PublicKey("MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA");
 const COMPUTE_BUDGET = new PublicKey("ComputeBudget111111111111111111111111111111");
@@ -100,6 +103,67 @@ function summarizeVersionedTx(tx) {
   };
 }
 
+/**
+ * @param {import("@solana/web3.js").VersionedTransactionResponse} raw
+ */
+async function buildBuilderTestFixture(connection, raw) {
+  const msg = raw.transaction.message;
+  const la = raw.meta?.loadedAddresses;
+  const accountKeysFromLookups =
+    la && Array.isArray(la.writable) && Array.isArray(la.readonly)
+      ? {
+          writable: la.writable.map((k) => new PublicKey(k)),
+          readonly: la.readonly.map((k) => new PublicKey(k)),
+        }
+      : undefined;
+  const keys = msg.getAccountKeys({ accountKeysFromLookups });
+  const compiled = msg.compiledInstructions;
+
+  for (const ci of compiled) {
+    const programId = keys.get(ci.programIdIndex);
+    if (!programId.equals(MARGINFI)) continue;
+    const data = Buffer.from(ci.data);
+    let decoded;
+    try {
+      decoded = ixCoder.decode(data);
+    } catch {
+      continue;
+    }
+    if (decoded?.name !== "lending_account_liquidate") continue;
+
+    const metas = ci.accountKeyIndexes.map((idx) => ({
+      pubkey: keys.get(idx).toBase58(),
+      isWritable: msg.isAccountWritable(idx),
+      isSigner: msg.isAccountSigner(idx),
+    }));
+
+    const liquidatorMarginfiPubkey = metas[3].pubkey;
+    const liquidateeMarginfiPubkey = metas[5].pubkey;
+    const assetBank = metas[1].pubkey;
+    const liabBank = metas[2].pubkey;
+    /** Anchor `lending_account_liquidate` accounts (group … token_program) before `remaining_accounts`. */
+    const STATIC_ACCOUNT_COUNT = 10;
+    const expectedRemainingMetas = metas.slice(STATIC_ACCOUNT_COUNT);
+    const liquidateeAccounts = Number(
+      decoded.data.liquidateeAccounts?.toString?.() ?? decoded.data.liquidateeAccounts ?? 0,
+    );
+    const liquidatorAccounts = Number(
+      decoded.data.liquidatorAccounts?.toString?.() ?? decoded.data.liquidatorAccounts ?? 0,
+    );
+
+    return {
+      liquidatorMarginfiPubkey,
+      liquidateeMarginfiPubkey,
+      assetBank,
+      liabBank,
+      liquidateeAccounts,
+      liquidatorAccounts,
+      expectedRemainingMetas,
+    };
+  }
+  throw new Error("lendingAccountLiquidate not found in reference transaction");
+}
+
 function agnesExpectedOrder({ flash }) {
   const core = [
     "pre_refresh_*",
@@ -130,12 +194,16 @@ async function main() {
 
   const connection = new Connection(rpc, "confirmed");
 
-  const [rawNoFlash, rawFlash] = await Promise.all([
+  const [rawNoFlash, rawFlash, rawFlash5nGX] = await Promise.all([
     connection.getTransaction(SIG_NO_FLASH, {
       commitment: "confirmed",
       maxSupportedTransactionVersion: 0,
     }),
     connection.getTransaction(SIG_FLASH, {
+      commitment: "confirmed",
+      maxSupportedTransactionVersion: 0,
+    }),
+    connection.getTransaction(SIG_FLASH_5nGX, {
       commitment: "confirmed",
       maxSupportedTransactionVersion: 0,
     }),
@@ -149,12 +217,29 @@ async function main() {
     console.error("missing tx", SIG_FLASH);
     process.exit(1);
   }
+  if (!rawFlash5nGX) {
+    console.error("missing tx", SIG_FLASH_5nGX);
+    process.exit(1);
+  }
 
   const sumNoFlash = summarizeVersionedTx(rawNoFlash);
   const sumFlash = summarizeVersionedTx(rawFlash);
+  const sumFlash5nGX = summarizeVersionedTx(rawFlash5nGX);
 
   writeFileSync(join(DEBUG, "reference-liquidation-tx-no-flash.json"), JSON.stringify(sumNoFlash, null, 2));
   writeFileSync(join(DEBUG, "reference-liquidation-tx-flash.json"), JSON.stringify(sumFlash, null, 2));
+
+  let builderTest;
+  try {
+    builderTest = await buildBuilderTestFixture(connection, rawFlash5nGX);
+  } catch (e) {
+    console.error("buildBuilderTestFixture failed:", e);
+    process.exit(1);
+  }
+  writeFileSync(
+    join(DEBUG, "reference-liquidation-tx-flash-5nGX.json"),
+    JSON.stringify({ summary: sumFlash5nGX, builderTest, signature: SIG_FLASH_5nGX }, null, 2),
+  );
 
   const marginfiIxNames = (s) =>
     s.instructions.filter((x) => x.programLabel === "marginfi").map((x) => x.marginfiInstruction || "?");
@@ -166,6 +251,7 @@ async function main() {
     fetchedAt: new Date().toISOString(),
     referenceNoFlashSignature: SIG_NO_FLASH,
     referenceFlashSignature: SIG_FLASH,
+    referenceFlash5nGXSignature: SIG_FLASH_5nGX,
     agnesBuildOrderNoFlash: agnesExpectedOrder({ flash: false }),
     agnesBuildOrderFlash: agnesExpectedOrder({ flash: true }),
     noFlash: {
@@ -232,6 +318,7 @@ async function main() {
 
   console.log("Wrote", join(DEBUG, "reference-liquidation-tx-no-flash.json"));
   console.log("Wrote", join(DEBUG, "reference-liquidation-tx-flash.json"));
+  console.log("Wrote", join(DEBUG, "reference-liquidation-tx-flash-5nGX.json"));
   console.log("Wrote", join(DEBUG, "reference-liquidation-tx-review.json"));
   console.log("\nNo-flash marginfi ix:", review.noFlash.marginfiInstructionSequence.join(" -> "));
   console.log("Flash ref marginfi ix:", review.flash.marginfiInstructionSequence.join(" -> "));

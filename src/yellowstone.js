@@ -5,7 +5,7 @@ import {
   commitmentFromConfig,
 } from "./subscribe.js";
 
-export async function createGrpcStream(config, trackedAccounts, onAccountUpdate) {
+export async function createGrpcStream(config, trackedAccounts, onAccountUpdate, onSlotUpdate) {
   const client = new Client(config.grpcEndpoint, config.grpcToken, {
     "grpc.max_receive_message_length": 128 * 1024 * 1024,
   });
@@ -16,6 +16,10 @@ export async function createGrpcStream(config, trackedAccounts, onAccountUpdate)
 
   const stream = await client.subscribe();
   stream.on("data", (update) => {
+    // Slot oneof: top-level `slot` is set; `account` is absent (unlike account messages).
+    if (update?.slot != null && update.account == null && typeof onSlotUpdate === "function") {
+      onSlotUpdate(update.slot);
+    }
     const accountUpdate = update.account?.account ? update.account : undefined;
     if (!accountUpdate) return;
     onAccountUpdate(normalizeAccountUpdate(accountUpdate));
@@ -47,6 +51,7 @@ function buildYellowstoneSubscribeRequest(config, trackedAccounts) {
     accountPubkeys: explicit,
     oracleOwnerProgramIds,
     includeExplicitMarginfiAccounts: includeExplicit,
+    subscribeSlots: Boolean(config.grpcSubscribeSlots),
   });
 }
 
