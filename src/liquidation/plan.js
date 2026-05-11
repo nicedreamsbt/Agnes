@@ -72,6 +72,8 @@ const JUPITER_WIDEN_MAX_ACCOUNTS = 32;
  * @property {import("@solana/web3.js").AccountMeta[] | null} [classicLendingLiquidateMetas] snapshot of ix.keys at plan build (for smoke validator)
  * @property {number} [computeUnitPriceMicroLamports]
  * @property {boolean} [usesMarginfiFlashWrap] true when classic_flash (marginfi flash envelope)
+ * @property {import("@solana/web3.js").TransactionInstruction | null} [initLiqRecordIx] receivership only: marginfi_account_init_liq_record when PDA missing
+ * @property {boolean} [needsInitLiqRecord] true when receivership path must create LiquidationRecord first
  */
 
 /**
@@ -143,6 +145,7 @@ export async function buildLabeledAgnesInstructionList(plan, flashCtx = null) {
  */
 function buildReceivershipReferenceLabeledList(plan) {
   const v = plan.candidate.venue;
+  const initLabeled = plan.initLiqRecordIx ? [{ label: "init_liq_record", ix: plan.initLiqRecordIx }] : [];
   const preLabeled = (plan.preRefreshIxs || []).map((ix, i) => ({
     label: `${v}_pre_refresh_${i}`,
     ix,
@@ -169,6 +172,7 @@ function buildReceivershipReferenceLabeledList(plan) {
 
   /** @type {LabeledIx[]} */
   const head = [
+    ...initLabeled,
     ...preLabeled,
     { label: "start_liquidate", ix: plan.startLiquidateIx },
     ...venueWithdrawRows,
@@ -362,15 +366,19 @@ export async function buildAgnesLiquidationPlan(ctx, cfg) {
 
     const [liqRecordPda] = deriveLiquidationRecord(c.liquidatee, ctx.client.program.programId);
     const liqRecordInfo = await ctx.connection.getAccountInfo(liqRecordPda, "processed");
-    base.liquidationBundleKind = liqRecordInfo ? "receivership" : "classic_flash";
+    const hasLiqRecord = Boolean(liqRecordInfo);
+    /** marginfi native: flash when no record; resume receivership if record exists. Cross-venue: always receivership. */
+    if (c.venue === "marginfi") {
+      base.liquidationBundleKind = hasLiqRecord ? "receivership" : "classic_flash";
+      base.needsInitLiqRecord = false;
+    } else {
+      base.liquidationBundleKind = "receivership";
+      base.needsInitLiqRecord = !hasLiqRecord;
+    }
     base.computeUnitPriceMicroLamports = cfg.agnesComputeUnitPriceMicroLamports ?? 0;
     base.usesMarginfiFlashWrap = base.liquidationBundleKind === "classic_flash";
 
     if (base.liquidationBundleKind === "classic_flash") {
-      if (c.venue !== "marginfi") {
-        base.skipReason = SkipReason.SKIP_CLASSIC_MARGINFI_NATIVE_ONLY;
-        return base;
-      }
       if (!ctx.liquidatorMarginfiAccount) {
         base.skipReason = SkipReason.SKIP_CLASSIC_REQUIRES_LIQUIDATOR_MARGINFI;
         return base;
@@ -435,7 +443,14 @@ export async function buildAgnesLiquidationPlan(ctx, cfg) {
       base.venueWithdrawIx = withdrawIxs[withdrawIxs.length - 1];
       base.startLiquidateIx = null;
       base.endLiquidateIx = null;
+      base.initLiqRecordIx = null;
     } else {
+      base.initLiqRecordIx = base.needsInitLiqRecord
+        ? await makeInitLiquidationRecordIx(ctx.client.program, {
+            marginfiAccountLiquidatee: c.liquidatee,
+            feePayer: ctx.liquidatorSigner,
+          })
+        : null;
       base.startLiquidateIx = await makeStartLiquidationIx(ctx.client.program, {
         marginfiAccountLiquidatee: c.liquidatee,
         liquidationReceiver: ctx.liquidatorSigner,
@@ -622,6 +637,8 @@ function emptyPlan(candidate, cfg) {
     candidate,
     flashLoanProvider: cfg.flashLoanProvider,
     liquidationBundleKind: undefined,
+    needsInitLiqRecord: false,
+    initLiqRecordIx: null,
     usesMarginfiFlashWrap: false,
     computeUnitPriceMicroLamports: cfg.agnesComputeUnitPriceMicroLamports ?? 0,
     classicLendingLiquidateIx: null,
