@@ -1,0 +1,14 @@
+[package]
+name = "marginfi-grpc-monitor-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Rust companion implementation of the marginfi account-state monitor core."
+publish = false
+
+[features]
+default = []
+live-yellowstone = []
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"

@@ -1,0 +1,8 @@
+*.log
+.env
+node_modules
+data/
+liquidator.json
+logs/
+debug/
+.cache/
